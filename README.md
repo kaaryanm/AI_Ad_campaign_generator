@@ -1,73 +1,67 @@
 # Disco ad-placement prototype
 
-An advertiser types one or two sentences, hits **Run**, and sees:
+This demo turns a short advertiser brief into a usable campaign draft:
+- ranked publishers with rationale plus explicit exclusions,
+- 3-5 selected shopper personas with reasoning,
+- one creative per selected persona (headline/body/CTA),
+- structured campaign config (`targeting`, `publisher_allocation`, `budget`, `bid_strategy`).
 
-1. **Ranked publishers** with a per-pick rationale, plus a short list of publishers we considered and excluded (and why).
-2. **3–5 selected shopper personas** with the planner's reasoning for each.
-3. **One ad creative per persona** (headline, body, CTA), written in voice for that persona.
-4. **A campaign config** (targeting, per-publisher allocation, suggested budget + flight, bid model + range + rationale) — the minimum shape a downstream order-creation system would need.
+## How to run
 
-## Run it
+Canonical reviewer path (single command from repo root):
 
 ```bash
-# 1. Backend (FastAPI + OpenAI)
-cd backend
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-echo "OPENAI_API_KEY=sk-..." > .env       # OPENAI_MODEL=gpt-4o-mini is the default
-uvicorn app.main:app --reload --port 8000
-
-# 2. Frontend (Vite + React)
-cd frontend
-npm install
-npm run dev                                # opens http://localhost:5173
+cd AI_Ad_campaign_generator
+echo "OPENAI_API_KEY=sk-..." > backend/.env    # optional: OPENAI_MODEL=gpt-4o-mini
+./start_servers.sh
 ```
 
-Sanity check: `curl localhost:8000/health` should return `{"ok":true,"publishers":20,"personas":10}`. Then drop one of the lines from `disco-takehome-candidate/data/example_advertisers.txt` into the textarea and hit Run.
+`./start_servers.sh` bootstraps `backend/.venv` if needed, installs deps, and starts:
+- backend at `http://localhost:8000`
+- frontend at `http://localhost:5173`
 
-## How it works
+Stop with `Ctrl+C`.
 
-Two LLM calls. That is the whole pipeline.
+Submission smoke check (run while `./start_servers.sh` is active):
+- `curl localhost:8000/health` -> `{"ok":true,"publishers":20,"personas":10}`
+- submit one brief in the UI (or `POST /campaign`) and expect HTTP `200` with:
+  - `ranked_publishers` + `excluded_publishers`
+  - `selected_personas` (3-5)
+  - `creatives` (one per persona)
+  - `campaign_config` (`targeting`, `publisher_allocation`, `budget`, `bid_strategy`)
 
-```
-brief ──► plan_campaign  ──►  ranked publishers + exclusions
-                              selected personas + reasoning
-                              campaign config (targeting / allocation / budget / bid)
-       └► write_creatives ──► one creative per selected persona
-```
+## What I built
 
-- **Call 1 (`plan_campaign`)** is the analyst. It receives the full publisher catalog (20) and full persona catalog (10) inline — they fit in a single prompt so we don't need retrieval. Output is constrained to the `CampaignPlan` Pydantic schema via OpenAI structured outputs, so the prompt focuses on *judgment*, not formatting.
-- **Call 2 (`write_creatives`)** is the copywriter. It is split out because planning and copywriting want different voices (hedged-analyst vs. punchy-direct-response) and because we want to re-roll creatives without re-planning.
+Pipeline is intentionally two calls:
+1. `plan_campaign`: plans publishers/personas/campaign config using structured output (`CampaignPlan` schema).
+2. `write_creatives`: writes persona-specific copy from that plan.
 
-Prompts live under `prompts/` and are the audit surface — both files have an `## Intent` block explaining why the call exists. `pipeline.py` parses the fenced blocks directly so the markdown is the source of truth, not a duplicate Python string.
+Prompts are auditable in `prompts/01_plan_campaign.md` and `prompts/02_write_creatives.md` (with intent documented in each).
 
-### Why the campaign config has *this* shape
+## What I cut (and why)
 
-It pins the smallest set of fields a real downstream system would actually need to write an order: who to target (`targeting`), where to spend (`publisher_allocation`), how much (`budget`), and how to bid (`bid_strategy`). The LLM fills the values using the publisher AOVs and audience signals it just used to rank — so the config is internally consistent with the ranking instead of being a separate guess.
+- Kept orchestration to two LLM calls (`plan_campaign` + `write_creatives`) to ship a reliable end-to-end prototype quickly; did not split ranking, persona selection, config assembly, and creative generation into separate calls yet.
+- No staged/streaming UI progression yet: users currently wait for the final assembled response (typically ~10-25 seconds) instead of seeing intermediate outputs section by section.
+- No advertiser budget input in the UI: campaign budget and allocation are inferred by the model rather than constrained by a user-provided target spend.
+- No retrieval/embeddings or deterministic pre-scoring layer yet: rationale text is the current "show your work" surface for recommendations.
+- No eval harness, persistence, auth, clarifying-question loop, or regeneration UX in this prototype: scope stayed focused on proving the core flow.
 
-## What I cut, intentionally
+## What I'd add with one more week
 
-- **No embeddings / vector search.** 20 publishers fit in a prompt. RAG here would be solving a problem that does not exist at this scale.
-- **No deterministic rubric scoring layer.** The rationale strings *are* the "show your work" surface. A scored pre-filter would be the obvious v2 once the catalog has thousands of publishers — the LLM would re-rank a top-K instead of seeing the whole list.
-- **No clarifying-question flow for vague briefs.** The prompt instead instructs the planner to lower its `fit_score`s and admit uncertainty in rationales when the brief is thin.
-- **No golden-input eval / LLM-as-judge harness.** Smoke-tested manually against the four lines in `example_advertisers.txt`.
-- **No persistence, history, regeneration, auth, or per-signal score breakdowns in the UI.** Single-page render of whatever the backend returned.
+1. Move from 2 calls to a multi-step call graph (intent extraction -> publisher ranking -> persona selection -> campaign config -> creative generation) so each step has narrower context and more controllable outputs.
+2. Run independent steps in parallel where possible and update the UI progressively (publishers first, then personas, then config, then creatives) to improve perceived responsiveness.
+3. Add optional advertiser inputs (daily/total budget, geography, risk preference) and use those as hard constraints when generating strategy and publisher allocation.
+4. Add deterministic pre-filtering and score features ahead of LLM reasoning to increase consistency and improve explainability.
+5. Add golden-brief evaluation plus LLM-judge checks for rationale quality and persona-to-creative alignment.
+6. Add better low-signal handling (clarifying questions or explicit low-confidence mode) and persona-level creative regeneration.
+7. Introduce retrieval/indexing once catalogs grow beyond prompt-friendly size.
 
-## What I'd do next, given another week
+## What's hard vs. easy
 
-1. **Deterministic pre-filter + score breakdowns.** Tag each publisher with a structured fit signal (category overlap, audience overlap, AOV alignment, geo). Surface those numbers in the UI as a drawer behind each rationale, so a planner can see *why* the LLM said what it said.
-2. **Eval harness.** A handful of golden advertiser briefs with expected publisher sets and an LLM-as-judge over rationale quality. Run on every prompt change. This is the single biggest lever for trusting iteration.
-3. **Vague-brief handling.** A pre-pass that detects under-specified briefs and either asks one targeted clarifying question or commits to a "low confidence" rendering path with banners.
-4. **Creative regeneration per persona.** A "re-roll this card" button — cheap because creatives are already a separate call.
-5. **Catalog scale-out.** Move the publisher/persona catalogs behind a thin retrieval layer so the prompt size stays bounded as the catalog grows.
+Easy: wiring FastAPI + Vite + structured LLM outputs.
 
-## What's actually hard here vs. easy
-
-**Easy:** the stack. FastAPI + Vite + a structured-output LLM call is a few hours of plumbing. With OpenAI's `responses.parse` against a Pydantic schema, the LLM cannot return malformed JSON, so the API contract more or less validates itself.
-
-**Hard, and where the interesting work lives:**
-
-- **Defining "good fit" without ground truth.** Rankings are inherently opinion. The interesting engineering is making those opinions auditable (visible rationale, surfaced exclusions) and evaluable (golden inputs, judge prompts) so you can move from "the demo looks plausible" to "we are confident this is improving week over week."
-- **Prompt + schema co-design.** The schema constrains what the model *can* say; the prompt constrains what it *should* say. Splitting planner from copywriter, forcing exclusions, capping fit scores on vague input — those are all schema/prompt decisions that materially change output quality.
-- **Pathological input.** A real system has to gracefully handle "we sell stuff online" and "advertise me a b2b enterprise sales tool against this DTC pet catalog." This prototype admits low confidence; production needs a real strategy (clarification, rejection, or routing to a different catalog).
-- **Scaling the catalog.** Once publishers go from 20 to 20,000 the whole "stuff it in the prompt" approach breaks and you need retrieval + a deterministic scoring stage. The prompt stops being the brain and becomes the explainer.
+Hard:
+- defining "good fit" without ground-truth labels,
+- co-designing prompt + schema to improve consistency and auditability,
+- handling pathological or underspecified briefs gracefully,
+- scaling from small inline catalogs to large retrieval-backed catalogs.
