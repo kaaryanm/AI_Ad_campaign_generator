@@ -30,7 +30,7 @@ load_dotenv()
 logger = Logger(service="advertisement-backend")
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DATA_DIR = REPO_ROOT / "disco-takehome-candidate" / "data"
+DATA_DIR = REPO_ROOT / "data"
 
 
 def _load_json(path: Path) -> Any:
